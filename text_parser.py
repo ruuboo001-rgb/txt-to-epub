@@ -23,7 +23,7 @@ DEFAULT_CHAPTER_REGEXES = [
     r"^(?:제\s*)?\d{1,4}\s*화(?:\s*[:：.\-–—]?\s*.*)?$",
     r"^#\s*\d{1,4}\s*(?:화|장)?(?:\s*[:：.\-–—.]?\s*.*)?$",
     r"^(?:제\s*)?\d{1,4}\s*장(?:\s*[:：.\-–—.]?\s*.*)?$",
-    r"^\d{1,4}\s*[.)]\s*\S.*$",  # 01.제목 / 01. 제목 / 1) 제목
+    r"^(?![12]\d{3}\.\s*\d{1,2}\.\s*\d{1,2}\.?$)(?:0?[1-9]|[1-9]\d{1,3})\s*[.)]\s*(?!\d)(?=.{1,80}$)\S.*$",  # 01.제목 / 01. 제목 / 1) 제목. 날짜·0.1초 같은 본문 오탐 방지
     r"^(?:episode|ep)\s*\d{1,4}(?:\s*[:：.\-–—]?\s*.*)?$",
 ]
 
@@ -84,7 +84,7 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
-def compile_chapter_patterns(custom_regex_text: str = "") -> List[Pattern[str]]:
+def compile_chapter_patterns(custom_regex_text: str = "", use_default_patterns: bool = True) -> List[Pattern[str]]:
     patterns: List[str] = []
     for line_no, raw in enumerate(custom_regex_text.splitlines(), start=1):
         raw = raw.strip()
@@ -97,7 +97,12 @@ def compile_chapter_patterns(custom_regex_text: str = "") -> List[Pattern[str]]:
             raise ValueError(f"직접 추가한 회차 정규식 {line_no}번째 줄 오류: {exc}\n\n{raw}") from exc
         patterns.append(raw)
 
-    patterns.extend(DEFAULT_CHAPTER_REGEXES)
+    if use_default_patterns:
+        patterns.extend(DEFAULT_CHAPTER_REGEXES)
+
+    if not patterns:
+        patterns.extend(DEFAULT_CHAPTER_REGEXES)
+
     return [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
 
 
@@ -142,13 +147,13 @@ def is_probable_chapter_title(line: str, patterns: Iterable[Pattern[str]]) -> bo
     return any(p.match(s) for p in patterns)
 
 
-def split_chapters(text: str, custom_regex_text: str = "", fallback_title: str = "본문") -> List[Chapter]:
+def split_chapters(text: str, custom_regex_text: str = "", fallback_title: str = "본문", use_default_patterns: bool = True) -> List[Chapter]:
     text = normalize_text(text)
     if not text:
         return []
 
     lines = text.split("\n")
-    patterns = compile_chapter_patterns(custom_regex_text)
+    patterns = compile_chapter_patterns(custom_regex_text, use_default_patterns=use_default_patterns)
 
     chapters: List[Chapter] = []
     current_title: Optional[str] = None
