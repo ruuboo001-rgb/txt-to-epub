@@ -15,15 +15,22 @@ from text_parser import (
     chapter_to_xhtml_body,
     compile_chapter_patterns,
     display_line_text,
+    get_pattern_preset_candidates,
+    merge_excluded_chapters,
     normalize_text,
+    regex_from_example_line,
+    regex_from_example_lines,
+    sample_title_like_lines,
     split_chapters,
     strip_original_start_page,
+    suggest_chapter_patterns,
+    suspicious_chapter_indices,
 )
 from themes import THEMES, epub_css, get_theme
 
 
 st.set_page_config(
-    page_title="TXT → EPUB Studio",
+    page_title="TXT → EPUB Studio v1.7",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -217,11 +224,81 @@ def cover_html_from_upload(uploaded_cover) -> str:
     return f'<div class="cover-page"><img class="cover-image" src="data:{mime};base64,{encoded}" alt="cover" /></div>'
 
 
-def analyze_chapters(raw_text: str, custom_regex_text: str, title: str, author: str, maker: str, include_title: bool, remove_start: bool, use_default_patterns: bool):
-    chapters = split_chapters(raw_text, custom_regex_text=custom_regex_text, fallback_title=title or "본문", use_default_patterns=use_default_patterns)
+def analyze_chapters(
+    raw_text: str,
+    custom_regex_text: str,
+    title: str,
+    author: str,
+    maker: str,
+    include_title: bool,
+    remove_start: bool,
+    use_default_patterns: bool,
+    remove_imported_toc: bool,
+):
+    chapters = split_chapters(
+        raw_text,
+        custom_regex_text=custom_regex_text,
+        fallback_title=title or "본문",
+        use_default_patterns=use_default_patterns,
+        remove_imported_toc=remove_imported_toc,
+    )
     if include_title and remove_start:
         chapters = strip_original_start_page(chapters, title=title, author=author, maker=maker)
     return chapters
+
+
+def chapter_option_label(chapter) -> str:
+    nonblank_count = len([line for line in chapter.lines if display_line_text(line)])
+    title = chapter.title.replace("\n", " ").strip()
+    if len(title) > 76:
+        title = title[:74] + "…"
+    return f"{chapter.index:03d}. {title}  ·  {nonblank_count}문단"
+
+
+def excluded_option_label(option) -> str:
+    idx, label = option
+    return label
+
+
+# ---------- State ----------
+st.session_state.setdefault("chapter_regex_text", DEFAULT_CHAPTER_HELP)
+st.session_state.setdefault("use_default_chapter_patterns", True)
+
+
+def apply_chapter_regex(regex: str, *, append: bool = False) -> None:
+    current = st.session_state.get("chapter_regex_text", "")
+    if append and current.strip():
+        existing = [line.strip() for line in current.splitlines() if line.strip() and not line.strip().startswith("//")]
+        new_lines = [line.strip() for line in regex.splitlines() if line.strip()]
+        merged = current.rstrip()
+        for line in new_lines:
+            if line not in existing:
+                merged += "\n" + line
+        st.session_state["chapter_regex_text"] = merged
+    else:
+        st.session_state["chapter_regex_text"] = regex
+    st.session_state["use_default_chapter_patterns"] = False
+
+
+def apply_regex_bundle(regexes: list[str], *, append: bool = False) -> None:
+    clean = []
+    for regex in regexes:
+        for line in regex.splitlines():
+            line = line.strip()
+            if line and line not in clean:
+                clean.append(line)
+    if clean:
+        apply_chapter_regex("\n".join(clean), append=append)
+
+
+PRESET_BUNDLES = {
+    "연재 화수형": ["프롤로그/에필로그", "연재: 숫자화", "외전/번외/특별편"],
+    "단행본 숫자제목형": ["프롤로그/에필로그", "단행본: 숫자. 제목", "외전/번외/특별편"],
+    "001 번호형": ["단행본: 세자리 001. 제목", "프롤로그/에필로그", "외전/번외/특별편"],
+    "단독 번호형": ["프롤로그/에필로그", "단독 번호: 1. 2. 3.", "단독 번호: 01. 02.", "단독 번호: 001. 002.", "외전/번외/특별편"],
+    "해시 번호형": ["프롤로그/에필로그", "해시: #번호", "외전/번외/특별편"],
+    "장/권/부 제목형": ["프롤로그/에필로그", "장 제목: 숫자장", "권/부: 숫자권·숫자부", "외전/번외/특별편"],
+}
 
 
 # ---------- Sidebar ----------
@@ -231,6 +308,18 @@ st.sidebar.write("")
 
 uploaded_txt = st.sidebar.file_uploader("TXT 파일", type=["txt"], help="텍스트 파일을 올리면 자동으로 회차를 분석합니다.")
 uploaded_cover = st.sidebar.file_uploader("표지 이미지", type=["jpg", "jpeg", "png", "webp"], help="선택 사항입니다.")
+
+raw_text = ""
+chapters = []
+error_message = ""
+if uploaded_txt is not None:
+    try:
+        raw_text = decode_text(uploaded_txt.getvalue())
+        normalized = normalize_text(raw_text)
+        if normalized:
+            raw_text = normalized
+    except Exception as exc:  # noqa: BLE001
+        error_message = str(exc)
 
 st.sidebar.divider()
 st.sidebar.markdown("### 책 정보")
@@ -253,14 +342,125 @@ remove_original_start = st.sidebar.checkbox(
     disabled=not include_title_page,
     help="TXT 맨 앞에 제목/작가만 있는 페이지가 들어왔을 때 새 표제지와 중복되지 않게 제거합니다.",
 )
+remove_imported_toc = st.sidebar.checkbox(
+    "TXT에 포함된 원본 목차 자동 제거",
+    value=True,
+    help="단행본 TXT 앞부분에 목차 페이지가 같이 들어와 회차가 두 번 잡힐 때, 내용이 거의 없는 중복 회차를 자동으로 제거합니다.",
+)
 st.sidebar.divider()
+
+with st.sidebar.expander("📌 목차 찾기 프리셋", expanded=True):
+    if not raw_text:
+        st.caption("TXT를 올리면 각 프리셋이 몇 개 잡히는지 같이 표시됩니다.")
+        st.caption("정규식을 몰라도 작품 형식에 맞는 목록을 골라 적용할 수 있습니다.")
+    else:
+        presets = get_pattern_preset_candidates(raw_text)
+        preset_by_name = {p.name: p for p in presets}
+
+        st.caption("자동감지만 믿지 말고, 작품에 맞는 방식을 직접 골라볼 수 있습니다. 여러 개를 함께 선택해도 됩니다.")
+        bundle_cols = st.columns(2)
+        bundle_items = list(PRESET_BUNDLES.items())
+        for i, (bundle_name, names) in enumerate(bundle_items):
+            with bundle_cols[i % 2]:
+                if st.button(bundle_name, key=f"bundle_{bundle_name}"):
+                    regexes = [preset_by_name[name].regex for name in names if name in preset_by_name]
+                    apply_regex_bundle(regexes, append=False)
+                    st.rerun()
+
+        labels = []
+        label_to_regex = {}
+        for p in presets:
+            ex = " / ".join(p.examples[:2]) if p.examples else "예시 없음"
+            label = f"{p.name} · {p.count}개 · {ex}"
+            labels.append(label)
+            label_to_regex[label] = p.regex
+
+        selected_presets = st.multiselect(
+            "직접 고를 패턴",
+            options=labels,
+            default=[label for label in labels if "개 ·" in label and not label.startswith("PART") and not "0개" in label][:3],
+            help="예: Prologue와 1. 제목을 같이 잡아야 하면 두 패턴을 함께 선택하세요.",
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("선택 프리셋만 사용", key="use_selected_presets", disabled=not selected_presets):
+                apply_regex_bundle([label_to_regex[x] for x in selected_presets], append=False)
+                st.rerun()
+        with c2:
+            if st.button("선택 프리셋 추가", key="add_selected_presets", disabled=not selected_presets):
+                apply_regex_bundle([label_to_regex[x] for x in selected_presets], append=True)
+                st.rerun()
+
+        with st.expander("프리셋 상세 보기", expanded=False):
+            for p in presets:
+                st.markdown(f"**{p.name}** · `{p.count}`개")
+                st.caption(p.description)
+                if p.examples:
+                    st.caption("예: " + " / ".join(p.examples[:5]))
+                st.code(p.regex, language="regex")
+
+with st.sidebar.expander("✨ 목차 패턴 자동감지", expanded=False):
+    if not raw_text:
+        st.caption("TXT를 올리면 회차 후보를 자동으로 보여드립니다.")
+    else:
+        candidates = suggest_chapter_patterns(raw_text)
+        if candidates:
+            st.caption("정규식을 몰라도 아래 후보 중 하나를 눌러 적용할 수 있습니다.")
+            for i, candidate in enumerate(candidates[:6], start=1):
+                st.markdown(f"**{candidate.name}** · `{candidate.count}`개")
+                st.caption(candidate.description)
+                st.caption("예: " + " / ".join(candidate.examples[:4]))
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("이 패턴만 사용", key=f"use_pattern_{i}"):
+                        apply_chapter_regex(candidate.regex, append=False)
+                        st.rerun()
+                with c2:
+                    if st.button("규칙에 추가", key=f"add_pattern_{i}"):
+                        apply_chapter_regex(candidate.regex, append=True)
+                        st.rerun()
+        else:
+            st.warning("자동 후보를 찾지 못했습니다. 아래에서 샘플 줄이나 직접 정규식을 사용해주세요.")
+
+        samples = sample_title_like_lines(raw_text, limit=80)
+        if samples:
+            selected_sample = st.selectbox("샘플 줄을 골라 정규식 만들기", samples, index=0)
+            generated = regex_from_example_line(selected_sample)
+            st.code(generated, language="regex")
+            if st.button("선택한 줄 기준으로 적용", key="apply_sample_regex"):
+                apply_chapter_regex(generated, append=False)
+                st.rerun()
+
+with st.sidebar.expander("🧭 예시로 패턴 만들기", expanded=True):
+    st.caption("정규식을 몰라도 목차가 되는 줄 몇 개를 그대로 붙여넣으면 자동으로 규칙을 만듭니다.")
+    example_lines_text = st.text_area(
+        "목차 예시 줄",
+        value="",
+        placeholder="예:\n1.\n2.\n3.\n\n또는\n01.\n02.\n03.",
+        height=130,
+    )
+    generated_from_examples = regex_from_example_lines(example_lines_text) if example_lines_text.strip() else ""
+    if generated_from_examples:
+        st.caption("생성된 정규식")
+        st.code(generated_from_examples, language="regex")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("예시 패턴만 사용", disabled=not bool(generated_from_examples)):
+            apply_chapter_regex(generated_from_examples, append=False)
+            st.rerun()
+    with c2:
+        if st.button("예시 패턴 추가", disabled=not bool(generated_from_examples)):
+            apply_chapter_regex(generated_from_examples, append=True)
+            st.rerun()
+    st.caption("적용하면 기본 회차 규칙은 자동으로 꺼집니다. 필요하면 아래에서 다시 켤 수 있습니다.")
+
 with st.sidebar.expander("회차 정규식 직접 추가", expanded=False):
     use_default_chapter_patterns = st.checkbox(
         "기본 회차 규칙도 같이 사용",
-        value=True,
+        key="use_default_chapter_patterns",
         help="끄면 아래에 직접 적은 정규식만 사용합니다. 예: 화$만 적용하고 싶을 때 끄세요.",
     )
-    custom_chapter_regex = st.text_area("회차 감지 규칙", value=DEFAULT_CHAPTER_HELP, height=190)
+    custom_chapter_regex = st.text_area("회차 감지 규칙", key="chapter_regex_text", height=190)
     st.caption("//로 시작하는 줄은 설명으로 무시됩니다. '~화$'가 아니라 '화$' 또는 '^\d+\s*화$'처럼 적어주세요.")
 
 with st.sidebar.expander("전환마크 직접 추가", expanded=False):
@@ -279,23 +479,15 @@ custom_scene_regex_clean = "\n".join(
 st.markdown(
     """
     <div class="hero">
-      <h1>TXT → EPUB Studio</h1>
+      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v1.7</span></h1>
       <p>텍스트를 올리면 회차를 자동 감지하고, 표지·표제지·목차·테마 CSS를 넣은 EPUB으로 만들어줍니다.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-raw_text = ""
-chapters = []
-error_message = ""
-
-if uploaded_txt is not None:
+if uploaded_txt is not None and raw_text and not error_message:
     try:
-        raw_text = decode_text(uploaded_txt.getvalue())
-        normalized = normalize_text(raw_text)
-        if normalized:
-            raw_text = normalized
         chapters = analyze_chapters(
             raw_text,
             custom_chapter_regex_clean,
@@ -305,9 +497,22 @@ if uploaded_txt is not None:
             include_title_page,
             remove_original_start,
             use_default_chapter_patterns,
+            remove_imported_toc,
         )
     except Exception as exc:  # noqa: BLE001
         error_message = str(exc)
+
+# 사용자가 잘못 잡힌 항목을 제외하면, EPUB/목차/본문 미리보기는 이 최종 목록을 사용합니다.
+if chapters:
+    _valid_exclude_options = {(chapter.index, chapter_option_label(chapter)) for chapter in chapters}
+    excluded_ids_for_export = {
+        idx
+        for idx, label in st.session_state.get("manual_excluded_chapters", [])
+        if (idx, label) in _valid_exclude_options
+    }
+else:
+    excluded_ids_for_export = set()
+export_chapters_global = merge_excluded_chapters(chapters, excluded_ids_for_export) if chapters else []
 
 left, right = st.columns([.92, 1.08], gap="large")
 
@@ -334,11 +539,39 @@ with left:
         st.success(f"총 {len(chapters)}개 구간을 감지했습니다.")
         if custom_chapter_regex_clean.strip():
             st.caption("직접 입력한 회차 규칙: " + " / ".join(custom_chapter_regex_clean.splitlines()[:5]))
-        st.caption("기본 회차 규칙 사용: " + ("켜짐" if use_default_chapter_patterns else "꺼짐 — 직접 입력한 규칙만 사용"))
+        st.caption("기본 회차 규칙 사용: " + ("켜짐 — 직접 입력 규칙과 기본 규칙을 함께 사용" if use_default_chapter_patterns else "꺼짐 — 직접 입력한 규칙만 사용"))
+        st.caption("원본 목차 자동 제거: " + ("켜짐" if remove_imported_toc else "꺼짐"))
         chapter_titles = [f"{chapter.index:03d}. {chapter.title}" for chapter in chapters[:300]]
-        st.text_area("감지된 회차", value="\n".join(chapter_titles), height=280)
+        st.text_area("감지된 회차", value="\n".join(chapter_titles), height=180)
         if len(chapters) > 300:
             st.caption("300개까지만 미리보기로 표시했습니다. EPUB 생성에는 전체가 들어갑니다.")
+
+        st.markdown("#### 잘못 잡힌 회차 제외")
+        st.caption("본문 문장이 회차처럼 잡혔다면 여기서 선택하세요. 제외한 항목은 삭제하지 않고 바로 앞 회차 본문으로 되돌립니다.")
+        suspect_ids = suspicious_chapter_indices(chapters)
+        if suspect_ids:
+            suspect_text = ", ".join(str(i).zfill(3) for i in suspect_ids[:20])
+            st.warning(f"확인 추천 항목: {suspect_text}" + (" …" if len(suspect_ids) > 20 else ""))
+        exclude_options = [(chapter.index, chapter_option_label(chapter)) for chapter in chapters]
+        if st.button("의심 항목을 제외 목록에 넣기", disabled=not bool(suspect_ids), key="fill_suspects"):
+            st.session_state["manual_excluded_chapters"] = [opt for opt in exclude_options if opt[0] in suspect_ids]
+            st.rerun()
+        if "manual_excluded_chapters" in st.session_state:
+            st.session_state["manual_excluded_chapters"] = [
+                opt for opt in st.session_state.get("manual_excluded_chapters", []) if opt in exclude_options
+            ]
+        manual_excluded = st.multiselect(
+            "목차에서 제외할 항목",
+            options=exclude_options,
+            format_func=excluded_option_label,
+            key="manual_excluded_chapters",
+        )
+        excluded_ids = {idx for idx, _label in manual_excluded}
+        export_chapters = merge_excluded_chapters(chapters, excluded_ids)
+        if excluded_ids:
+            st.success(f"EPUB 생성 시 {len(excluded_ids)}개 항목을 목차에서 제외하고, 최종 {len(export_chapters)}개 구간으로 만듭니다.")
+            with st.expander("제외 적용 후 목차 미리보기", expanded=False):
+                st.text_area("최종 목차", value="\n".join(f"{c.index:03d}. {c.title}" for c in export_chapters[:300]), height=180)
     elif uploaded_txt:
         st.warning("회차를 감지하지 못했습니다. 그래도 본문 1개 구간으로 만들 수 있습니다.")
     else:
@@ -364,11 +597,11 @@ with right:
             st.info("새 표제지 넣기가 꺼져 있습니다.")
 
     with tab_toc:
-        if chapters:
+        if export_chapters_global:
             preview_document(
                 toc_page_body(
                     book_title,
-                    chapters[:80],
+                    export_chapters_global[:80],
                     include_title_page=include_title_page,
                     include_cover_page=uploaded_cover is not None,
                     theme_key=theme_key,
@@ -376,14 +609,14 @@ with right:
                 theme_key,
                 height=620,
             )
-            if len(chapters) > 80:
+            if len(export_chapters_global) > 80:
                 st.caption("목차 미리보기는 80개까지만 표시됩니다. EPUB에는 전체 목차가 들어갑니다.")
         else:
             st.info("TXT를 올리면 목차 미리보기가 표시됩니다.")
 
     with tab_body:
-        if chapters:
-            sample = chapters[0]
+        if export_chapters_global:
+            sample = export_chapters_global[0]
             body = chapter_to_xhtml_body(sample, scene_mark=scene_mark or theme.ornament, custom_scene_regex_text=custom_scene_regex_clean)
             preview_document(body, theme_key, height=620)
         else:
@@ -433,6 +666,8 @@ if make_button:
                     include_title_page=include_title_page,
                     remove_original_start_page=bool(remove_original_start and include_title_page),
                     use_default_chapter_patterns=use_default_chapter_patterns,
+                    remove_imported_toc=remove_imported_toc,
+                    chapters_override=export_chapters_global if export_chapters_global else None,
                 )
                 epub_bytes = output_path.read_bytes()
 
