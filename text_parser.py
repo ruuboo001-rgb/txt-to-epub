@@ -30,6 +30,7 @@ DEFAULT_CHAPTER_REGEXES = [
     r"^(?:프롤로그|프롤로그\.|prologue)(?:\s*[:：.\-–—]?\s*.*)?$",
     r"^(?:에필로그|에필로그\.|epilogue)(?:\s*[:：.\-–—]?\s*.*)?$",
     r"^(?:외전|특별편|후일담)(?:\s*[:：.\-–—]?\s*.*)?$",
+    r"^[<＜〈《【]\s*(?:제\s*)?\d{1,4}\s*화\s*[>＞〉》】](?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)",  # <1화>, 〈1화〉 같은 꺾쇠 화수
     r"^(?:제\s*)?\d{1,4}\s*화(?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)",  # 3화부터/3화의 같은 본문 오탐 방지
     r"^#\s*\d{1,4}\s*(?:화|장)?(?:\s*$|\s+\S.*$|\s*[:：.\-–—.]\s*\S.*$)",
     r"^(?:제\s*)?\d{1,4}\s*장(?:\s*$|\s+\S.*$|\s*[:：.\-–—.]\s*\S.*$)",  # 20장이 족히... 같은 본문 오탐 방지
@@ -50,7 +51,7 @@ DEFAULT_SCENE_BREAK_RE = re.compile(
 
 
 _SIMPLE_P_RE = re.compile(r"^\s*<p(?:\s+[^>]*)?>\s*(.*?)\s*</p>\s*$", re.IGNORECASE | re.DOTALL)
-_TAG_RE = re.compile(r"<[^>]+>")
+_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")  # <1화> 같은 회차 표기는 HTML 태그로 지우지 않습니다.
 
 
 def display_line_text(line: str) -> str:
@@ -417,6 +418,11 @@ _PATTERN_DEFS: list[tuple[str, str, str]] = [
         "예: 001. 시작, 002. Prologue., 014. 5. 레티샤",
     ),
     (
+        "꺾쇠: <1화>",
+        r"^[<＜〈《【]\s*(?:제\s*)?\d{1,4}\s*화\s*[>＞〉》】](?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)",
+        "예: <1화>, <2화>, 〈3화〉, 《4화》",
+    ),
+    (
         "연재: 숫자화",
         r"^(?:제\s*)?\d{1,4}\s*화(?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)",
         "예: 1화, 12화, 100화, 1화. 시작",
@@ -536,6 +542,8 @@ def regex_from_example_line(line: str) -> str:
         return r"^\d{2}\s*[.)]\s*$"
     if re.match(r"^(?!(?:19|20)\d{2}\s*[.)]\s*$)\d{1,4}\s*[.)]\s*$", s):
         return r"^(?!(?:19|20)\d{2}\s*[.)]\s*$)\d{1,4}\s*[.)]\s*$"
+    if re.match(r"^[<＜〈《【]\s*(?:제\s*)?\d{1,4}\s*화\s*[>＞〉》】](?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)", s):
+        return r"^[<＜〈《【]\s*(?:제\s*)?\d{1,4}\s*화\s*[>＞〉》】](?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)"
     if re.match(r"^\d{1,4}\s*화(?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)", s):
         return r"^\d{1,4}\s*화(?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)"
     if re.match(r"^(?:제\s*)?\d{1,4}\s*장", s):
@@ -562,6 +570,34 @@ def regex_from_example_line(line: str) -> str:
 
 
 
+def split_example_inputs(example_text: str) -> list[str]:
+    """사용자가 붙여넣은 예시를 줄/슬래시/쉼표 단위로 나눕니다.
+
+    예시 입력은 실제 본문이 아니라 '목차가 되는 모양'을 알려주는 칸이라서
+    <1화>/<2화>/<3화>처럼 한 줄에 붙여 써도 각각의 예시로 해석합니다.
+    """
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_line in example_text.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        pieces = re.split(r"\s*(?:/|／|,|，|\||｜)\s*", raw_line)
+        for piece in pieces:
+            item = display_line_text(piece).strip()
+            if not item:
+                continue
+            # 사용자가 '예: <1화>'처럼 붙여넣은 경우를 정리합니다.
+            item = re.sub(r"^(?:예시?|sample)\s*[:：]\s*", "", item, flags=re.I).strip()
+            # 앞에 붙은 목록 번호는 제거하되, '01.' 자체가 예시인 경우는 건드리지 않습니다.
+            if not re.match(r"^\d{1,4}\s*[.)]\s*$", item):
+                item = re.sub(r"^\s*\d{1,3}\s*[.)]\s+(?=\S)", "", item).strip()
+            if item and item not in seen:
+                seen.add(item)
+                result.append(item)
+    return result
+
+
 def regex_from_example_lines(example_text: str) -> str:
     """여러 개의 예시 줄을 보고 가장 알맞은 회차 정규식을 만듭니다.
 
@@ -571,8 +607,7 @@ def regex_from_example_lines(example_text: str) -> str:
     - 1. 제목 / 2. 제목 -> 단행본 숫자 제목형
     - Prologue #1. 이름 + Epilogue. ... -> 프롤로그/에필로그형
     """
-    examples = [display_line_text(line) for line in example_text.splitlines()]
-    examples = [line for line in examples if line]
+    examples = split_example_inputs(example_text)
     if not examples:
         return ""
 
@@ -587,6 +622,8 @@ def regex_from_example_lines(example_text: str) -> str:
         return r"^(?![12]\d{3}\.\s*\d{1,2}\.\s*\d{1,2}\.?$)(?:0?[1-9]|[1-9]\d{1,3})\s*[.)]\s*(?!\d)(?=.{1,90}$)\S.*$"
     if all(re.match(r"^#\s*\d{1,4}", x) for x in examples):
         return r"^#\s*\d{1,4}\s*(?:화|장)?(?:\s*$|\s+\S.*$|\s*[:：.\-–—.]\s*\S.*$)"
+    if all(re.match(r"^[<＜〈《【]\s*(?:제\s*)?\d{1,4}\s*화\s*[>＞〉》】]", x) for x in examples):
+        return r"^[<＜〈《【]\s*(?:제\s*)?\d{1,4}\s*화\s*[>＞〉》】](?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)"
     if all(re.match(r"^(?:제\s*)?\d{1,4}\s*화", x) for x in examples):
         return r"^(?:제\s*)?\d{1,4}\s*화(?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)"
     if all(re.match(r"^(?:제\s*)?\d{1,4}\s*장", x) for x in examples):
