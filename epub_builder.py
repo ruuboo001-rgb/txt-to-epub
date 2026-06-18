@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from ebooklib import epub
 
-from text_parser import Chapter, chapter_to_xhtml_body, split_chapters, strip_original_start_page
+from text_parser import Chapter, chapter_to_xhtml_body, reindex_chapters, split_chapters, strip_original_start_page
 from themes import epub_css, get_theme
 
 
@@ -107,6 +107,8 @@ def build_epub(
     include_title_page: bool = True,
     remove_original_start_page: bool = True,
     use_default_chapter_patterns: bool = True,
+    remove_imported_toc: bool = False,
+    chapters_override: Optional[List[Chapter]] = None,
 ) -> List[Chapter]:
     """TXT 내용을 EPUB으로 저장하고, 생성된 챕터 목록을 반환합니다."""
     title = title.strip() or "무제"
@@ -115,9 +117,18 @@ def build_epub(
     theme = get_theme(theme_key)
     scene_mark = scene_mark or theme.ornament
 
-    chapters = split_chapters(text, custom_regex_text=custom_regex_text, fallback_title=title, use_default_patterns=use_default_chapter_patterns)
-    if include_title_page and remove_original_start_page:
-        chapters = strip_original_start_page(chapters, title=title, author=author, maker=maker)
+    if chapters_override is not None:
+        chapters = reindex_chapters([Chapter(ch.title, ch.lines[:], ch.index) for ch in chapters_override])
+    else:
+        chapters = split_chapters(
+            text,
+            custom_regex_text=custom_regex_text,
+            fallback_title=title,
+            use_default_patterns=use_default_chapter_patterns,
+            remove_imported_toc=remove_imported_toc,
+        )
+        if include_title_page and remove_original_start_page:
+            chapters = strip_original_start_page(chapters, title=title, author=author, maker=maker)
     if not chapters:
         raise ValueError("TXT 본문이 비어 있습니다. TXT 파일 내용을 확인해주세요.")
 
