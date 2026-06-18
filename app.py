@@ -217,8 +217,8 @@ def cover_html_from_upload(uploaded_cover) -> str:
     return f'<div class="cover-page"><img class="cover-image" src="data:{mime};base64,{encoded}" alt="cover" /></div>'
 
 
-def analyze_chapters(raw_text: str, custom_regex_text: str, title: str, author: str, maker: str, include_title: bool, remove_start: bool):
-    chapters = split_chapters(raw_text, custom_regex_text=custom_regex_text, fallback_title=title or "본문")
+def analyze_chapters(raw_text: str, custom_regex_text: str, title: str, author: str, maker: str, include_title: bool, remove_start: bool, use_default_patterns: bool):
+    chapters = split_chapters(raw_text, custom_regex_text=custom_regex_text, fallback_title=title or "본문", use_default_patterns=use_default_patterns)
     if include_title and remove_start:
         chapters = strip_original_start_page(chapters, title=title, author=author, maker=maker)
     return chapters
@@ -255,8 +255,13 @@ remove_original_start = st.sidebar.checkbox(
 )
 st.sidebar.divider()
 with st.sidebar.expander("회차 정규식 직접 추가", expanded=False):
-    custom_chapter_regex = st.text_area("회차 감지 규칙", value=DEFAULT_CHAPTER_HELP, height=170)
-    st.caption("//로 시작하는 줄은 설명으로 무시됩니다.")
+    use_default_chapter_patterns = st.checkbox(
+        "기본 회차 규칙도 같이 사용",
+        value=True,
+        help="끄면 아래에 직접 적은 정규식만 사용합니다. 예: 화$만 적용하고 싶을 때 끄세요.",
+    )
+    custom_chapter_regex = st.text_area("회차 감지 규칙", value=DEFAULT_CHAPTER_HELP, height=190)
+    st.caption("//로 시작하는 줄은 설명으로 무시됩니다. '~화$'가 아니라 '화$' 또는 '^\d+\s*화$'처럼 적어주세요.")
 
 with st.sidebar.expander("전환마크 직접 추가", expanded=False):
     custom_scene_regex = st.text_area("전환마크 감지 규칙", value=DEFAULT_SCENE_HELP, height=145)
@@ -299,6 +304,7 @@ if uploaded_txt is not None:
             book_maker,
             include_title_page,
             remove_original_start,
+            use_default_chapter_patterns,
         )
     except Exception as exc:  # noqa: BLE001
         error_message = str(exc)
@@ -326,6 +332,9 @@ with left:
         st.error(error_message)
     elif chapters:
         st.success(f"총 {len(chapters)}개 구간을 감지했습니다.")
+        if custom_chapter_regex_clean.strip():
+            st.caption("직접 입력한 회차 규칙: " + " / ".join(custom_chapter_regex_clean.splitlines()[:5]))
+        st.caption("기본 회차 규칙 사용: " + ("켜짐" if use_default_chapter_patterns else "꺼짐 — 직접 입력한 규칙만 사용"))
         chapter_titles = [f"{chapter.index:03d}. {chapter.title}" for chapter in chapters[:300]]
         st.text_area("감지된 회차", value="\n".join(chapter_titles), height=280)
         if len(chapters) > 300:
@@ -423,6 +432,7 @@ if make_button:
                     custom_scene_regex_text=custom_scene_regex_clean,
                     include_title_page=include_title_page,
                     remove_original_start_page=bool(remove_original_start and include_title_page),
+                    use_default_chapter_patterns=use_default_chapter_patterns,
                 )
                 epub_bytes = output_path.read_bytes()
 
