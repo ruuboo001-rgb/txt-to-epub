@@ -30,7 +30,7 @@ from themes import THEMES, epub_css, get_theme
 
 
 st.set_page_config(
-    page_title="TXT → EPUB Studio v1.9",
+    page_title="TXT → EPUB Studio v2.1",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -467,6 +467,23 @@ with st.sidebar.expander("전환마크 직접 추가", expanded=False):
     custom_scene_regex = st.text_area("전환마크 감지 규칙", value=DEFAULT_SCENE_HELP, height=145)
     st.caption("*, ***, ♧처럼 문자 그대로 적어도 됩니다.")
 
+with st.sidebar.expander("특수 공백 처리", expanded=False):
+    preserve_long_blanks = st.checkbox(
+        "긴 빈 줄을 <br> 공백으로 보존",
+        value=False,
+        help="*** 대신 긴 엔터 공백으로 장면 전환을 넣은 TXT에서만 켜세요. 일반 작품에서는 꺼두는 것을 추천합니다.",
+    )
+    long_blank_threshold = st.number_input(
+        "몇 줄 이상을 긴 공백으로 볼까요?",
+        min_value=2,
+        max_value=12,
+        value=3,
+        step=1,
+        disabled=not preserve_long_blanks,
+        help="예: 3으로 두면 빈 줄 3개 이상만 <br>로 보존하고, 빈 줄 1~2개는 일반 여백처럼 처리합니다.",
+    )
+    st.caption("기본값은 꺼짐입니다. 켜면 긴 빈 줄은 삭제하지 않고 EPUB 안에 빈 줄 수만큼 <br> 블록으로 넣습니다.")
+
 # Remove helper comment lines before processing.
 custom_chapter_regex_clean = "\n".join(
     line for line in custom_chapter_regex.splitlines() if line.strip() and not line.strip().startswith("//")
@@ -479,7 +496,7 @@ custom_scene_regex_clean = "\n".join(
 st.markdown(
     """
     <div class="hero">
-      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v1.8</span></h1>
+      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v2.1</span></h1>
       <p>텍스트를 올리면 회차를 자동 감지하고, 표지·표제지·목차·테마 CSS를 넣은 EPUB으로 만들어줍니다.</p>
     </div>
     """,
@@ -617,7 +634,13 @@ with right:
     with tab_body:
         if export_chapters_global:
             sample = export_chapters_global[0]
-            body = chapter_to_xhtml_body(sample, scene_mark=scene_mark or theme.ornament, custom_scene_regex_text=custom_scene_regex_clean)
+            body = chapter_to_xhtml_body(
+                sample,
+                scene_mark=scene_mark or theme.ornament,
+                custom_scene_regex_text=custom_scene_regex_clean,
+                preserve_long_blanks=preserve_long_blanks,
+                long_blank_threshold=int(long_blank_threshold),
+            )
             preview_document(body, theme_key, height=620)
         else:
             st.info("TXT를 올리면 본문 미리보기가 표시됩니다.")
@@ -668,6 +691,8 @@ if make_button:
                     use_default_chapter_patterns=use_default_chapter_patterns,
                     remove_imported_toc=remove_imported_toc,
                     chapters_override=export_chapters_global if export_chapters_global else None,
+                    preserve_long_blanks=preserve_long_blanks,
+                    long_blank_threshold=int(long_blank_threshold),
                 )
                 epub_bytes = output_path.read_bytes()
 
