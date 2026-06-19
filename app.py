@@ -30,7 +30,7 @@ from themes import THEMES, epub_css, get_theme
 
 
 st.set_page_config(
-    page_title="TXT → EPUB Studio v1.8",
+    page_title="TXT → EPUB Studio v1.9",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
