@@ -52,6 +52,7 @@ DEFAULT_SCENE_BREAK_RE = re.compile(
 
 _SIMPLE_P_RE = re.compile(r"^\s*<p(?:\s+[^>]*)?>\s*(.*?)\s*</p>\s*$", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")  # <1화> 같은 회차 표기는 HTML 태그로 지우지 않습니다.
+_DOT_BREAK_LINE_RE = re.compile(r"^[.·ㆍ]$")  # 여러 줄로 이어진 . / · / ㆍ 전환 표시 감지용입니다.
 
 
 def display_line_text(line: str) -> str:
@@ -92,7 +93,8 @@ def normalize_text(text: str) -> str:
     text = text.replace("\ufeff", "")
     text = text.replace("\t", " ")
     text = re.sub(r"[ \u00a0]{2,}", " ", text)
-    text = re.sub(r"\n{5,}", "\n\n\n\n", text)
+    # 빈 줄이 길게 이어지는 작품은 그 공백 자체가 장면 전환인 경우가 있습니다.
+    # 그래서 줄바꿈 개수는 여기서 강제로 줄이지 않고, 출력 단계의 옵션에서 처리합니다.
     return text.strip()
 
 
@@ -691,26 +693,67 @@ def line_to_xhtml(
     return f"<p>{escaped}</p>"
 
 
+def _blank_line_blocks(count: int) -> list[str]:
+    """긴 빈 줄을 EPUB 리더에서 비교적 안정적으로 보존하기 위한 블록입니다."""
+    return ['<p class="blank-line"><br /></p>' for _ in range(max(0, count))]
+
+
 def chapter_to_xhtml_body(
     chapter: Chapter,
     scene_mark: str = "✦ ✦ ✦",
     custom_scene_regex_text: str = "",
+    preserve_long_blanks: bool = False,
+    long_blank_threshold: int = 3,
 ) -> str:
     scene_patterns = compile_scene_patterns(custom_scene_regex_text)
+    threshold = max(2, int(long_blank_threshold or 3))
     parts = [
         f'<section id="{safe_id(chapter.title, chapter.index)}">',
         f'<h1 class="chapter-title">{html.escape(chapter.title)}</h1>',
     ]
-    previous_blank = False
+    blank_count = 0
+    dot_break_count = 0
+
+    def append_pending_blanks() -> None:
+        nonlocal blank_count
+        if blank_count and len(parts) > 2:
+            if preserve_long_blanks and blank_count >= threshold:
+                parts.extend(_blank_line_blocks(blank_count))
+            else:
+                parts.append('<div class="soft-space"></div>')
+        blank_count = 0
+
+    def flush_dot_breaks() -> None:
+        """여러 줄로 이어진 . / · / ㆍ 전환 표시를 한 번의 중앙 전환마크로 처리합니다."""
+        nonlocal dot_break_count
+        if not dot_break_count:
+            return
+        append_pending_blanks()
+        if dot_break_count >= 3:
+            parts.append(f'<p class="scene-break">{html.escape(scene_mark)}</p>')
+        else:
+            # 점이 1~2줄뿐이면 장면 전환으로 확정하지 않고 일반 문단으로 남깁니다.
+            for _ in range(dot_break_count):
+                parts.append('<p>.</p>')
+        dot_break_count = 0
+
     for line in chapter.lines:
-        if not display_line_text(line):
-            previous_blank = True
+        stripped = display_line_text(line)
+        if not stripped:
+            flush_dot_breaks()
+            blank_count += 1
             continue
+
+        if _DOT_BREAK_LINE_RE.match(stripped):
+            dot_break_count += 1
+            continue
+
+        flush_dot_breaks()
         block = line_to_xhtml(line, scene_mark, scene_patterns)
         if block:
-            if previous_blank and len(parts) > 2:
-                parts.append('<div class="soft-space"></div>')
+            append_pending_blanks()
             parts.append(block)
-        previous_blank = False
+
+    flush_dot_breaks()
     parts.append("</section>")
     return "\n".join(parts)
