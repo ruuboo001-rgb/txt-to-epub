@@ -20,6 +20,7 @@ THEMES = {
     "rose": Theme("rose", "로즈 핑크", "#d96b9f", "#9b3f68", "#fff2f7", "#fffafd", "#2f2930", "#7b6a74", "✦ ✦ ✦"),
     "blue": Theme("blue", "문라이트 블루", "#5c7fcb", "#2f5597", "#f1f5ff", "#fbfcff", "#242936", "#687385", "◆ ◆ ◆"),
     "beige": Theme("beige", "클래식 베이지", "#b88952", "#7b5632", "#fbf5ec", "#fffdf8", "#302820", "#77695a", "❖ ❖ ❖"),
+    "green": Theme("green", "연두 그린", "#73b86a", "#3f7f49", "#f1faee", "#fdfff9", "#253224", "#687d62", "❧ ❧ ❧"),
     "violet": Theme("violet", "바이올렛", "#8f70d8", "#6043a3", "#f5f1ff", "#fdfbff", "#2b2733", "#726981", "◇ ◇ ◇"),
     "mono": Theme("mono", "모던 모노", "#666666", "#222222", "#f6f6f6", "#ffffff", "#222222", "#777777", "* * *"),
 }
@@ -232,6 +233,14 @@ p {{
 
 .soft-space {{
     height: 0.85em;
+}}
+
+.blank-line {{
+    margin: 0;
+    padding: 0;
+    text-indent: 0;
+    text-align: left;
+    line-height: 1.35;
 }}
 """.strip()
 
