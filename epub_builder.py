@@ -109,6 +109,8 @@ def build_epub(
     use_default_chapter_patterns: bool = True,
     remove_imported_toc: bool = False,
     chapters_override: Optional[List[Chapter]] = None,
+    preserve_long_blanks: bool = False,
+    long_blank_threshold: int = 3,
 ) -> List[Chapter]:
     """TXT 내용을 EPUB으로 저장하고, 생성된 챕터 목록을 반환합니다."""
     title = title.strip() or "무제"
@@ -194,6 +196,8 @@ def build_epub(
             chapter,
             scene_mark=scene_mark,
             custom_scene_regex_text=custom_scene_regex_text,
+            preserve_long_blanks=preserve_long_blanks,
+            long_blank_threshold=long_blank_threshold,
         )
         item.add_link(href="../Styles/Style0001.css", rel="stylesheet", type="text/css")
         book.add_item(item)
