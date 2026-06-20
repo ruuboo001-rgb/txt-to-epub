@@ -26,11 +26,11 @@ from text_parser import (
     suggest_chapter_patterns,
     suspicious_chapter_indices,
 )
-from themes import THEMES, epub_css, get_theme
+from themes import FONT_PRESETS, THEMES, epub_css, get_theme
 
 
 st.set_page_config(
-    page_title="TXT → EPUB Studio v2.1",
+    page_title="TXT → EPUB Studio v2.5",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -196,8 +196,19 @@ def sanitize_filename(name: str) -> str:
     return name or "book"
 
 
-def preview_document(body: str, theme_key: str, height: int = 620) -> None:
-    css = epub_css(theme_key)
+def preview_document(
+    body: str,
+    theme_key: str,
+    height: int = 620,
+    *,
+    auto_indent: bool | None = None,
+    font_key: str | None = None,
+) -> None:
+    if auto_indent is None:
+        auto_indent = bool(globals().get("auto_indent", True))
+    if font_key is None:
+        font_key = globals().get("font_key", "serif")
+    css = epub_css(theme_key, auto_indent=auto_indent, font_key=font_key)
     html_doc = f"""
     <!doctype html>
     <html>
@@ -234,6 +245,8 @@ def analyze_chapters(
     remove_start: bool,
     use_default_patterns: bool,
     remove_imported_toc: bool,
+    remove_repeated_title_headers: bool,
+    repeated_header_text: str,
 ):
     chapters = split_chapters(
         raw_text,
@@ -241,6 +254,8 @@ def analyze_chapters(
         fallback_title=title or "본문",
         use_default_patterns=use_default_patterns,
         remove_imported_toc=remove_imported_toc,
+        remove_repeated_title_headers=remove_repeated_title_headers,
+        repeated_header_text=repeated_header_text,
     )
     if include_title and remove_start:
         chapters = strip_original_start_page(chapters, title=title, author=author, maker=maker)
@@ -335,7 +350,47 @@ theme_key = theme_labels[theme_label]
 theme = get_theme(theme_key)
 scene_mark = st.sidebar.text_input("전환마크를 바꿔 표시", value=theme.ornament)
 
+with st.sidebar.expander("본문 스타일", expanded=False):
+    auto_indent = st.checkbox(
+        "본문 자동 들여쓰기 사용",
+        value=True,
+        help="끄면 본문 문단의 text-indent를 0으로 두어 자동 들여쓰기를 하지 않습니다.",
+    )
+    use_font_style = st.checkbox(
+        "본문 글꼴 지정 사용",
+        value=True,
+        help="끄면 EPUB CSS에서 font-family를 지정하지 않아 리더앱의 기본 글꼴을 따릅니다.",
+    )
+    font_options = [key for key in FONT_PRESETS.keys() if key != "reader"]
+    font_labels = {FONT_PRESETS[key][0]: key for key in font_options}
+    font_label = st.selectbox(
+        "본문 글꼴",
+        list(font_labels.keys()),
+        index=list(font_labels.values()).index("serif"),
+        disabled=not use_font_style,
+        help="외부 폰트 파일을 넣지 않는 글꼴은 리더/기기에 설치된 글꼴 후보를 CSS에 적는 방식입니다.",
+    )
+    font_key = font_labels[font_label] if use_font_style else "reader"
+    custom_font_upload = None
+    if use_font_style and font_key == "custom":
+        custom_font_upload = st.file_uploader(
+            "동봉할 폰트 파일",
+            type=["ttf", "otf", "woff", "woff2"],
+            help="폰트 파일을 EPUB 내부 Fonts 폴더에 넣고 @font-face로 연결합니다.",
+        )
+        st.warning(
+            "외부 폰트를 동봉하면 EPUB 용량이 커지고, 일부 리더에서는 폰트가 무시되거나 오류가 날 수 있습니다. "
+            "폰트 사용 권한/라이선스도 직접 확인해주세요.",
+            icon="⚠️",
+        )
+    st.caption("기본값은 기존처럼 자동 들여쓰기 ON, 글꼴 지정 ON입니다. 불편하면 여기서 끄면 됩니다.")
+
 include_title_page = st.sidebar.checkbox("새 표제지 넣기", value=True)
+include_toc_page = st.sidebar.checkbox(
+    "꾸민 목차 페이지 생성",
+    value=True,
+    help="끄면 EPUB 안의 별도 목차.xhtml 페이지는 만들지 않습니다. 단, 리더 앱의 내장 목차/nav는 그대로 생성됩니다.",
+)
 remove_original_start = st.sidebar.checkbox(
     "기존 제목만 있는 시작페이지 제거",
     value=True,
@@ -346,6 +401,18 @@ remove_imported_toc = st.sidebar.checkbox(
     "TXT에 포함된 원본 목차 자동 제거",
     value=True,
     help="단행본 TXT 앞부분에 목차 페이지가 같이 들어와 회차가 두 번 잡힐 때, 내용이 거의 없는 중복 회차를 자동으로 제거합니다.",
+)
+remove_repeated_title_headers = st.sidebar.checkbox(
+    "회차 위 반복 작품제목 제거",
+    value=False,
+    help="소설제목 → 빈 줄 → 1화처럼 각 회차 바로 위에 작품 제목이 반복될 때만 켜세요. 작품명과 같은 줄 바로 아래에 회차 제목이 있을 때만 제거합니다.",
+)
+repeated_header_text = st.sidebar.text_input(
+    "제거할 반복 머리말",
+    value="",
+    placeholder="비우면 작품 제목 사용",
+    disabled=not remove_repeated_title_headers,
+    help="작품 제목과 다른 문구가 반복될 때 입력하세요. 예: 소설제목, 작품명, Copyright 등",
 )
 st.sidebar.divider()
 
@@ -496,8 +563,8 @@ custom_scene_regex_clean = "\n".join(
 st.markdown(
     """
     <div class="hero">
-      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v2.1</span></h1>
-      <p>텍스트를 올리면 회차를 자동 감지하고, 표지·표제지·목차·테마 CSS를 넣은 EPUB으로 만들어줍니다.</p>
+      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v2.5</span></h1>
+      <p>텍스트를 올리면 회차를 자동 감지하고, 표지·표제지·선택형 목차·테마 CSS를 넣은 EPUB으로 만들어줍니다.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -515,6 +582,8 @@ if uploaded_txt is not None and raw_text and not error_message:
             remove_original_start,
             use_default_chapter_patterns,
             remove_imported_toc,
+            remove_repeated_title_headers,
+            repeated_header_text,
         )
     except Exception as exc:  # noqa: BLE001
         error_message = str(exc)
@@ -558,6 +627,7 @@ with left:
             st.caption("직접 입력한 회차 규칙: " + " / ".join(custom_chapter_regex_clean.splitlines()[:5]))
         st.caption("기본 회차 규칙 사용: " + ("켜짐 — 직접 입력 규칙과 기본 규칙을 함께 사용" if use_default_chapter_patterns else "꺼짐 — 직접 입력한 규칙만 사용"))
         st.caption("원본 목차 자동 제거: " + ("켜짐" if remove_imported_toc else "꺼짐"))
+        st.caption("회차 위 반복 작품제목 제거: " + ("켜짐" if remove_repeated_title_headers else "꺼짐"))
         chapter_titles = [f"{chapter.index:03d}. {chapter.title}" for chapter in chapters[:300]]
         st.text_area("감지된 회차", value="\n".join(chapter_titles), height=180)
         if len(chapters) > 300:
@@ -614,7 +684,9 @@ with right:
             st.info("새 표제지 넣기가 꺼져 있습니다.")
 
     with tab_toc:
-        if export_chapters_global:
+        if not include_toc_page:
+            st.info("꾸민 목차 페이지 생성이 꺼져 있습니다. EPUB 내부 목차/nav는 유지되므로 리더기의 목차 버튼에서는 회차가 보입니다.")
+        elif export_chapters_global:
             preview_document(
                 toc_page_body(
                     book_title,
@@ -660,6 +732,8 @@ with col_b:
 if make_button:
     if uploaded_txt is None:
         st.error("TXT 파일을 먼저 올려주세요.")
+    elif font_key == "custom" and custom_font_upload is None:
+        st.error("외부 폰트 파일 동봉을 선택했다면 폰트 파일을 먼저 올려주세요. 또는 본문 글꼴을 다른 항목으로 바꿔주세요.")
     else:
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -674,6 +748,14 @@ if make_button:
                     cover_path = tmpdir_path / f"cover{suffix}"
                     cover_path.write_bytes(uploaded_cover.getvalue())
 
+                font_path: Optional[Path] = None
+                if font_key == "custom" and custom_font_upload is not None:
+                    suffix = Path(custom_font_upload.name).suffix.lower()
+                    if suffix not in {".ttf", ".otf", ".woff", ".woff2"}:
+                        suffix = ".ttf"
+                    font_path = tmpdir_path / f"user_font{suffix}"
+                    font_path.write_bytes(custom_font_upload.getvalue())
+
                 output_path = tmpdir_path / f"{sanitize_filename(output_basename)}.epub"
                 made_chapters = build_epub(
                     text=txt_text,
@@ -687,12 +769,18 @@ if make_button:
                     custom_regex_text=custom_chapter_regex_clean,
                     custom_scene_regex_text=custom_scene_regex_clean,
                     include_title_page=include_title_page,
+                    include_toc_page=include_toc_page,
                     remove_original_start_page=bool(remove_original_start and include_title_page),
                     use_default_chapter_patterns=use_default_chapter_patterns,
                     remove_imported_toc=remove_imported_toc,
+                    remove_repeated_title_headers=remove_repeated_title_headers,
+                    repeated_header_text=repeated_header_text,
                     chapters_override=export_chapters_global if export_chapters_global else None,
                     preserve_long_blanks=preserve_long_blanks,
                     long_blank_threshold=int(long_blank_threshold),
+                    auto_indent=auto_indent,
+                    font_key=font_key,
+                    custom_font_path=font_path,
                 )
                 epub_bytes = output_path.read_bytes()
 
