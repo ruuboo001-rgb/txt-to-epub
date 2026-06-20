@@ -30,7 +30,7 @@ from themes import FONT_PRESETS, THEMES, epub_css, get_theme
 
 
 st.set_page_config(
-    page_title="TXT → EPUB Studio v2.6",
+    page_title="TXT → EPUB Studio v2.8",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -601,7 +601,7 @@ custom_scene_regex_clean = "\n".join(
 st.markdown(
     """
     <div class="hero">
-      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v2.6</span></h1>
+      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v2.8</span></h1>
       <p>텍스트를 올리면 회차를 자동 감지하고, 표지·표제지·선택형 목차·테마 CSS를 넣은 EPUB으로 만들어줍니다.</p>
     </div>
     """,

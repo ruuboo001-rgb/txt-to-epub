@@ -33,6 +33,7 @@ DEFAULT_CHAPTER_REGEXES = [
     r"^[<＜〈《【]\s*(?:제\s*)?\d{1,4}\s*화\s*[>＞〉》】](?:\s*$|\s+\S.*$|\s*[:：.\-–—]\s*\S.*$)",  # <1화>, 〈1화〉 같은 꺾쇠 화수
     r"^\s*(?:제\s*)?\d{1,4}\s*화\.?(?:\s*$|\s+\S.*$|\s*[:：\-–—]\s*\S.*$)",  # 1화/1화. 감지, 3화부터/3화의 같은 본문 오탐 방지
     r"^#\s*\d{1,4}\s*(?:화|장)?(?:\s*$|\s+\S.*$|\s*[:：.\-–—.]\s*\S.*$)",
+    r"^\s*[-–—−]\s*\d{1,4}\s*[-–—−]\s*$",  # -1-, - 2 - 같은 대시 감싼 단독 회차
     r"^(?:제\s*)?\d{1,4}\s*장(?:\s*$|\s+\S.*$|\s*[:：.\-–—.]\s*\S.*$)",  # 20장이 족히... 같은 본문 오탐 방지
     r"^(?![12]\d{3}\.\s*\d{1,2}\.\s*\d{1,2}\.?$)(?:0?[1-9]|[1-9]\d{1,3})\s*[.)]\s*(?!\d)(?=.{1,80}$)\S.*$",  # 01.제목 / 01. 제목 / 1) 제목. 날짜·0.1초 같은 본문 오탐 방지
     r"^(?!(?:19|20)\d{2}\s*[.)]\s*$)\d{1,4}\s*[.)]\s*$",  # 1. / 01. / 001. 처럼 번호만 있는 단독 회차
@@ -151,12 +152,64 @@ def compile_scene_patterns(custom_scene_regex_text: str = "") -> List[Pattern[st
     return patterns
 
 
+_BODY_CONNECTOR_STARTS = (
+    "그런데", "그러나", "하지만", "그리고", "그래서", "그러니까", "때문에", "문제는",
+    "나는", "내가", "나도", "그는", "그녀는", "우리는", "그들이", "이제", "결국",
+    "다만", "또한", "마침", "갑자기", "어쩌면", "아마", "분명", "물론",
+)
+
+_QUOTE_START_CHARS = ("'", '"', "‘", "’", "“", "”", "「", "『", "《", "〈", "(", "（", "[", "【")
+
+
+def is_likely_false_positive_chapter_title(text: str) -> bool:
+    """회차처럼 보이지만 실제 본문일 가능성이 큰 줄을 거릅니다.
+
+    특히 다음 오탐을 막습니다.
+    - `1. '이름'은 ...`, `2. 그런데 ...`처럼 번호가 붙은 본문 문장
+
+    참고: `-1-`, `- 2 -`는 실제 회차 표기로 쓰이는 작품이 있어서
+    오탐으로 제외하지 않고 목차 후보로 둡니다. 필요 없으면 감지 목록에서 체크 해제하세요.
+    """
+    s = display_line_text(text)
+    if not s:
+        return False
+
+    # 숫자. 제목형이 실제 제목이 아니라 번호 붙은 본문 문장인 경우를 완화합니다.
+    m = re.match(r"^(?:0?[1-9]|[1-9]\d{1,3})\s*[.)]\s*(\S.*)$", s)
+    if m:
+        body = m.group(1).strip()
+
+        # `1. '오르델 키리스'는 ...`처럼 따옴표/괄호 뒤에 조사로 이어지면 제목보다 본문일 확률이 큽니다.
+        if body.startswith(_QUOTE_START_CHARS) and re.search(
+            r"[\'\"’”」』〉》\)\]】]\s*(?:은|는|이|가|을|를|에게|께|에서|으로|로|와|과|도|만|의)",
+            body,
+        ):
+            return True
+
+        # `2. 그런데 문제는 ...`처럼 접속사/서술 문장으로 시작하면 본문 가능성이 큽니다.
+        if body.startswith(_BODY_CONNECTOR_STARTS):
+            return True
+
+        # 제목 줄은 보통 쉼표로 끝나지 않습니다. 번호 붙은 문장이 줄바꿈으로 잘린 경우가 많습니다.
+        if body.endswith((",", "，", ";", "；")):
+            return True
+
+        # 문장형 종결로 끝나는 긴 줄은 확인 없이 회차로 쓰기 위험합니다.
+        if len(body) >= 28 and re.search(r"(?:했다|였다|이었다|합니다|했습니다|입니다|였다\.|했다\.|다\.|요\.?|죠\.?)$", body):
+            return True
+
+    return False
+
+
 def is_probable_chapter_title(line: str, patterns: Iterable[Pattern[str]]) -> bool:
     s = display_line_text(line)
     if not s:
         return False
     # 너무 긴 줄은 본문일 가능성이 커서 회차 제목으로 보지 않습니다.
     if len(s) > 100:
+        return False
+    # 자동/프리셋/직접 정규식으로 잡혔더라도 명백한 본문형 오탐은 제외합니다.
+    if is_likely_false_positive_chapter_title(s):
         return False
     return any(p.match(s) for p in patterns)
 
@@ -341,6 +394,8 @@ def is_suspicious_chapter_title(title: str) -> bool:
     s = display_line_text(title)
     if not s:
         return False
+    if is_likely_false_positive_chapter_title(s):
+        return True
 
     # 3화부터, 3화의, 20장이, 1장에서처럼 회차 단어 뒤에 조사/어미가 바로 붙으면 본문일 확률이 큽니다.
     if re.search(r"\d{1,4}\s*화(?:부터|까지|의|은|는|이|가|을|를|로|으로|에서|에도|라면|였|이었다|인|같|쯤)", s):
@@ -491,6 +546,11 @@ _PATTERN_DEFS: list[tuple[str, str, str]] = [
         "예: 001., 002., 003. 처럼 세 자리 번호만 있는 회차",
     ),
     (
+        "대시 번호: -1-",
+        r"^\s*[-–—−]\s*\d{1,4}\s*[-–—−]\s*$",
+        "예: -1-, - 2 -, —3— 처럼 대시로 감싼 번호 회차",
+    ),
+    (
         "단행본: 세자리 001. 제목",
         r"^\d{3}\s*[.)]\s*(?!\d)(?=.{1,90}$)\S.*$",
         "예: 001. 시작, 002. Prologue., 014. 5. 레티샤",
@@ -561,7 +621,7 @@ def suggest_chapter_patterns(text: str, *, min_count: int = 1) -> List[PatternCa
     candidates: List[PatternCandidate] = []
     for name, regex, desc in _PATTERN_DEFS:
         pattern = re.compile(regex, re.IGNORECASE)
-        matches = [line for line in display_lines if line and len(line) <= 100 and pattern.match(line)]
+        matches = [line for line in display_lines if line and len(line) <= 100 and pattern.match(line) and not is_likely_false_positive_chapter_title(line)]
         examples = _unique_examples(matches)
         if len(matches) >= min_count and examples:
             candidates.append(PatternCandidate(name=name, regex=regex, count=len(matches), examples=examples, description=desc))
@@ -581,7 +641,7 @@ def get_pattern_preset_candidates(text: str) -> List[PatternCandidate]:
     candidates: List[PatternCandidate] = []
     for name, regex, desc in _PATTERN_DEFS:
         pattern = re.compile(regex, re.IGNORECASE)
-        matches = [line for line in display_lines if line and len(line) <= 120 and pattern.match(line)]
+        matches = [line for line in display_lines if line and len(line) <= 120 and pattern.match(line) and not is_likely_false_positive_chapter_title(line)]
         examples = _unique_examples(matches)
         candidates.append(PatternCandidate(name=name, regex=regex, count=len(matches), examples=examples, description=desc))
     candidates.sort(key=lambda c: (c.count == 0, -c.count, c.name))
@@ -600,7 +660,7 @@ def sample_title_like_lines(text: str, *, limit: int = 80) -> List[str]:
         line = display_line_text(raw)
         if not line or line in seen or len(line) > 100:
             continue
-        if any(pattern.match(line) for pattern in compiled):
+        if (not is_likely_false_positive_chapter_title(line)) and any(pattern.match(line) for pattern in compiled):
             seen.add(line)
             result.append(line)
             if len(result) >= limit:
@@ -616,6 +676,8 @@ def regex_from_example_line(line: str) -> str:
 
     if re.match(r"^\d{3}\s*[.)]\s*$", s):
         return r"^\d{3}\s*[.)]\s*$"
+    if re.match(r"^\s*[-–—−]\s*\d{1,4}\s*[-–—−]\s*$", s):
+        return r"^\s*[-–—−]\s*\d{1,4}\s*[-–—−]\s*$"
     if re.match(r"^\d{2}\s*[.)]\s*$", s):
         return r"^\d{2}\s*[.)]\s*$"
     if re.match(r"^(?!(?:19|20)\d{2}\s*[.)]\s*$)\d{1,4}\s*[.)]\s*$", s):
@@ -694,6 +756,8 @@ def regex_from_example_lines(example_text: str) -> str:
     # 같은 종류가 여러 줄이면 그 종류를 우선합니다.
     if all(re.match(r"^\d{3}\s*[.)]\s*$", x) for x in examples):
         return r"^\d{3}\s*[.)]\s*$"
+    if all(re.match(r"^\s*[-–—−]\s*\d{1,4}\s*[-–—−]\s*$", x) for x in examples):
+        return r"^\s*[-–—−]\s*\d{1,4}\s*[-–—−]\s*$"
     if all(re.match(r"^\d{2}\s*[.)]\s*$", x) for x in examples):
         return r"^\d{2}\s*[.)]\s*$"
     if all(re.match(r"^(?!(?:19|20)\d{2}\s*[.)]\s*$)\d{1,4}\s*[.)]\s*$", x) for x in examples):
