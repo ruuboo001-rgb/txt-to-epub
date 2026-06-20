@@ -24,6 +24,25 @@ def _relative_from_text(internal_path: str) -> str:
     return "../" + internal_path if not internal_path.startswith("../") else internal_path
 
 
+
+
+def _font_media_type(path: str | Path) -> str:
+    suffix = Path(path).suffix.lower()
+    return {
+        ".ttf": "font/ttf",
+        ".otf": "font/otf",
+        ".woff": "font/woff",
+        ".woff2": "font/woff2",
+    }.get(suffix, "application/octet-stream")
+
+
+def _font_internal_name(path: str | Path) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix not in {".ttf", ".otf", ".woff", ".woff2"}:
+        suffix = ".ttf"
+    return "Fonts/UserFont" + suffix
+
+
 def cover_page_body(cover_src: str) -> str:
     return f'''
 <div class="cover-page">
@@ -105,12 +124,18 @@ def build_epub(
     custom_regex_text: str = "",
     custom_scene_regex_text: str = "",
     include_title_page: bool = True,
+    include_toc_page: bool = True,
     remove_original_start_page: bool = True,
     use_default_chapter_patterns: bool = True,
     remove_imported_toc: bool = False,
+    remove_repeated_title_headers: bool = False,
+    repeated_header_text: str = "",
     chapters_override: Optional[List[Chapter]] = None,
     preserve_long_blanks: bool = False,
     long_blank_threshold: int = 3,
+    auto_indent: bool = True,
+    font_key: str = "serif",
+    custom_font_path: Optional[str | Path] = None,
 ) -> List[Chapter]:
     """TXT 내용을 EPUB으로 저장하고, 생성된 챕터 목록을 반환합니다."""
     title = title.strip() or "무제"
@@ -128,6 +153,8 @@ def build_epub(
             fallback_title=title,
             use_default_patterns=use_default_chapter_patterns,
             remove_imported_toc=remove_imported_toc,
+            remove_repeated_title_headers=remove_repeated_title_headers,
+            repeated_header_text=repeated_header_text,
         )
         if include_title_page and remove_original_start_page:
             chapters = strip_original_start_page(chapters, title=title, author=author, maker=maker)
@@ -143,13 +170,34 @@ def build_epub(
     if maker:
         book.add_metadata("DC", "contributor", maker)
 
+    custom_font_src = ""
+    custom_font_item: Optional[epub.EpubItem] = None
+    if font_key == "custom" and custom_font_path:
+        custom_font_path = Path(custom_font_path)
+        if custom_font_path.exists():
+            font_internal_name = _font_internal_name(custom_font_path)
+            custom_font_src = "../" + font_internal_name
+            custom_font_item = epub.EpubItem(
+                uid="user_font",
+                file_name=font_internal_name,
+                media_type=_font_media_type(custom_font_path),
+                content=custom_font_path.read_bytes(),
+            )
+
     style = epub.EpubItem(
         uid="style_nav",
         file_name="Styles/Style0001.css",
         media_type="text/css",
-        content=epub_css(theme_key),
+        content=epub_css(
+            theme_key,
+            auto_indent=auto_indent,
+            font_key=font_key,
+            custom_font_src=custom_font_src,
+        ),
     )
     book.add_item(style)
+    if custom_font_item is not None:
+        book.add_item(custom_font_item)
 
     cover_page: Optional[epub.EpubHtml] = None
     if cover_path:
@@ -172,17 +220,19 @@ def build_epub(
         title_page.add_link(href="../Styles/Style0001.css", rel="stylesheet", type="text/css")
         book.add_item(title_page)
 
-    toc_page = epub.EpubHtml(uid="toc_page", title="목차", file_name="Text/toc.xhtml", lang="ko")
-    toc_page.content = toc_page_body(
-        title,
-        chapters,
-        include_title_page=title_page is not None,
-        include_cover_page=cover_page is not None,
-        theme_key=theme_key,
-    )
-    toc_page.add_link(href="../Styles/Style0001.css", rel="stylesheet", type="text/css")
-    book.add_item(toc_page)
-    book.guide.append({"type": "toc", "title": "목차", "href": "Text/toc.xhtml"})
+    toc_page: Optional[epub.EpubHtml] = None
+    if include_toc_page:
+        toc_page = epub.EpubHtml(uid="toc_page", title="목차", file_name="Text/toc.xhtml", lang="ko")
+        toc_page.content = toc_page_body(
+            title,
+            chapters,
+            include_title_page=title_page is not None,
+            include_cover_page=cover_page is not None,
+            theme_key=theme_key,
+        )
+        toc_page.add_link(href="../Styles/Style0001.css", rel="stylesheet", type="text/css")
+        book.add_item(toc_page)
+        book.guide.append({"type": "toc", "title": "목차", "href": "Text/toc.xhtml"})
 
     chapter_items: List[epub.EpubHtml] = []
     for i, chapter in enumerate(chapters, start=1):
@@ -208,7 +258,8 @@ def build_epub(
         toc_items.append(epub.Link("Text/cover.xhtml", "표지", "cover_page"))
     if title_page is not None:
         toc_items.append(epub.Link("Text/title_page.xhtml", "표제지", "title_page"))
-    toc_items.append(epub.Link("Text/toc.xhtml", "목차", "toc_page"))
+    if toc_page is not None:
+        toc_items.append(epub.Link("Text/toc.xhtml", "목차", "toc_page"))
     toc_items.extend(chapter_items)
     book.toc = tuple(toc_items)
 
@@ -219,7 +270,8 @@ def build_epub(
         spine.append(cover_page)
     if title_page is not None:
         spine.append(title_page)
-    spine.append(toc_page)
+    if toc_page is not None:
+        spine.append(toc_page)
     spine.extend(chapter_items)
     book.spine = tuple(spine)
 
