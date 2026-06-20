@@ -26,16 +26,60 @@ THEMES = {
 }
 
 
+FONT_PRESETS = {
+    "reader": ("리더 기본 글꼴", ""),
+    "serif": ("명조/바탕 계열", "serif"),
+    "sans": ("고딕/돋움 계열", "sans-serif"),
+    "batang": ("바탕", "'Batang', '바탕', serif"),
+    "malgun": ("맑은 고딕", "'Malgun Gothic', '맑은 고딕', sans-serif"),
+    "nanum_myeongjo": ("나눔명조 계열", "'Nanum Myeongjo', 'NanumMyeongjo', serif"),
+    "nanum_gothic": ("나눔고딕 계열", "'Nanum Gothic', 'NanumGothic', sans-serif"),
+    "custom": ("외부 폰트 파일 동봉", "'UserFont', serif"),
+}
+
+
+def font_label_to_key(label: str) -> str:
+    for key, (known_label, _css) in FONT_PRESETS.items():
+        if known_label == label:
+            return key
+    return "serif"
+
+
+def get_font_family(font_key: str = "serif", custom_font_family: str = "UserFont") -> str:
+    if font_key == "custom":
+        return f'"{custom_font_family}", serif'
+    return FONT_PRESETS.get(font_key, FONT_PRESETS["serif"])[1]
+
+
 def get_theme(key: str) -> Theme:
     return THEMES.get(key, THEMES["rose"])
 
 
-def epub_css(theme_key: str) -> str:
+def epub_css(
+    theme_key: str,
+    *,
+    auto_indent: bool = True,
+    font_key: str = "serif",
+    custom_font_family: str = "UserFont",
+    custom_font_src: str = "",
+) -> str:
     t = get_theme(theme_key)
+    indent_value = "1em" if auto_indent else "0"
+    font_family = get_font_family(font_key, custom_font_family).strip()
+    body_font_line = f"    font-family: {font_family};\n" if font_family else ""
+    font_face_css = ""
+    if custom_font_src:
+        font_face_css = (
+            f'@font-face {{\n'
+            f'    font-family: "{custom_font_family}";\n'
+            f'    src: url("{custom_font_src}");\n'
+            f'}}\n\n'
+        )
+
     return f"""
 @charset "utf-8";
 
-html, body {{
+{font_face_css}html, body {{
     margin: 0;
     padding: 0;
 }}
@@ -43,8 +87,7 @@ html, body {{
 body {{
     color: {t.text};
     background: {t.paper};
-    font-family: serif;
-    line-height: 1.85;
+{body_font_line}    line-height: 1.85;
     word-break: keep-all;
     -epub-line-break: normal;
 }}
@@ -52,7 +95,7 @@ body {{
 p {{
     margin: 0 0 0.72em 0;
     text-align: justify;
-    text-indent: 1em;
+    text-indent: {indent_value};
 }}
 
 .cover-page {{
