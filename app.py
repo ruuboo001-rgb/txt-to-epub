@@ -30,7 +30,7 @@ from themes import FONT_PRESETS, THEMES, epub_css, get_theme
 
 
 st.set_page_config(
-    page_title="TXT → EPUB Studio v2.5",
+    page_title="TXT → EPUB Studio v2.6",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -196,6 +196,19 @@ def sanitize_filename(name: str) -> str:
     return name or "book"
 
 
+def title_from_uploaded_filename(filename: str) -> str:
+    """TXT 파일명에서 EPUB 제목으로 쓰기 좋은 문자열을 만듭니다."""
+    stem = Path(filename or "").stem
+    stem = re.sub(r"[_\-]+", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip(" .")
+
+    # 흔한 정리: 끝에 붙은 txt/텍본/완결/본편 같은 작업 메모가 있으면 너무 과하게 지우지 않고
+    # 괄호 안 확장자성 메모 정도만 정돈합니다. 작품 제목이 훼손될 수 있으므로 보수적으로 처리합니다.
+    stem = re.sub(r"\s*[\[(（【]\s*(?:txt|텍본|text)\s*[\])）】]\s*$", "", stem, flags=re.I)
+    stem = re.sub(r"\s+", " ", stem).strip(" .")
+    return stem or "제목 없음"
+
+
 def preview_document(
     body: str,
     theme_key: str,
@@ -338,7 +351,32 @@ if uploaded_txt is not None:
 
 st.sidebar.divider()
 st.sidebar.markdown("### 책 정보")
-book_title = st.sidebar.text_input("제목", value="")
+auto_title_from_filename = st.sidebar.checkbox(
+    "TXT 파일명으로 제목 자동 입력",
+    value=True,
+    help="TXT를 올리면 파일명에서 확장자를 뺀 이름을 제목 칸에 자동으로 넣습니다. 직접 제목을 쓰고 싶으면 끄거나 제목 칸을 수정하세요.",
+)
+
+if "book_title" not in st.session_state:
+    st.session_state["book_title"] = ""
+
+if uploaded_txt is not None:
+    current_txt_name = uploaded_txt.name
+    guessed_title = title_from_uploaded_filename(current_txt_name)
+    previous_txt_name = st.session_state.get("_last_uploaded_txt_name")
+
+    if previous_txt_name != current_txt_name:
+        st.session_state["_last_uploaded_txt_name"] = current_txt_name
+        if auto_title_from_filename and (
+            not st.session_state.get("book_title", "").strip()
+            or st.session_state.get("_title_was_auto_filled", False)
+        ):
+            st.session_state["book_title"] = guessed_title
+            st.session_state["_title_was_auto_filled"] = True
+
+book_title = st.sidebar.text_input("제목", key="book_title", placeholder="TXT 파일명에서 자동 입력 가능")
+if uploaded_txt is not None and auto_title_from_filename:
+    st.sidebar.caption(f"자동 제목 후보: {title_from_uploaded_filename(uploaded_txt.name)}")
 book_author = st.sidebar.text_input("작가", value="")
 book_maker = st.sidebar.text_input("EPUB 제작자", value="", placeholder="비워두면 표시하지 않음")
 
@@ -563,7 +601,7 @@ custom_scene_regex_clean = "\n".join(
 st.markdown(
     """
     <div class="hero">
-      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v2.5</span></h1>
+      <h1>TXT → EPUB Studio <span style="font-size:1rem; opacity:.65;">v2.6</span></h1>
       <p>텍스트를 올리면 회차를 자동 감지하고, 표지·표제지·선택형 목차·테마 CSS를 넣은 EPUB으로 만들어줍니다.</p>
     </div>
     """,
