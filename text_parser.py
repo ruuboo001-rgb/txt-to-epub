@@ -161,19 +161,95 @@ def is_probable_chapter_title(line: str, patterns: Iterable[Pattern[str]]) -> bo
     return any(p.match(s) for p in patterns)
 
 
+
+
+def strip_repeated_header_lines_before_chapters(
+    text: str,
+    patterns: Iterable[Pattern[str]],
+    *,
+    title: str = "",
+    header_text: str = "",
+    max_blank_lines: int = 4,
+) -> str:
+    """
+    단행본/연재본 TXT에서 각 회차 바로 위에 작품 제목이 반복되는 경우를 안전하게 제거합니다.
+
+    예:
+      소설제목
+
+      1화
+      ...
+      소설제목
+
+      2화
+
+    - 기본값으로는 아무것도 하지 않습니다. 옵션을 켰을 때만 사용하세요.
+    - 작품 제목/사용자 입력 문구와 정확히 같은 줄만 제거합니다.
+    - 그 줄 바로 아래, 빈 줄 몇 개 이내에 실제 회차 제목이 있을 때만 제거합니다.
+    - 본문 중간에 우연히 작품 제목이 나온 줄은 아래가 회차 제목이 아니면 건드리지 않습니다.
+    """
+    text = normalize_text(text)
+    if not text:
+        return text
+
+    candidates = []
+    for value in (header_text, title):
+        value = (value or "").strip()
+        norm = _norm_title_like(value)
+        if norm and norm not in candidates:
+            candidates.append(norm)
+    if not candidates:
+        return text
+
+    lines = text.split("\n")
+    remove_indices: set[int] = set()
+    max_blanks = max(0, int(max_blank_lines or 0))
+
+    for i, raw in enumerate(lines):
+        current_norm = _norm_title_like(raw)
+        if not current_norm or current_norm not in candidates:
+            continue
+
+        j = i + 1
+        blank_indices: list[int] = []
+        while j < len(lines) and not display_line_text(lines[j]) and len(blank_indices) <= max_blanks:
+            blank_indices.append(j)
+            j += 1
+
+        if len(blank_indices) > max_blanks:
+            continue
+        if j >= len(lines):
+            continue
+        if is_probable_chapter_title(lines[j], patterns):
+            remove_indices.add(i)
+            remove_indices.update(blank_indices)
+
+    if not remove_indices:
+        return text
+    return "\n".join(line for idx, line in enumerate(lines) if idx not in remove_indices)
+
 def split_chapters(
     text: str,
     custom_regex_text: str = "",
     fallback_title: str = "본문",
     use_default_patterns: bool = True,
     remove_imported_toc: bool = False,
+    remove_repeated_title_headers: bool = False,
+    repeated_header_text: str = "",
 ) -> List[Chapter]:
     text = normalize_text(text)
     if not text:
         return []
 
-    lines = text.split("\n")
     patterns = compile_chapter_patterns(custom_regex_text, use_default_patterns=use_default_patterns)
+    if remove_repeated_title_headers:
+        text = strip_repeated_header_lines_before_chapters(
+            text,
+            patterns,
+            title=fallback_title,
+            header_text=repeated_header_text,
+        )
+    lines = text.split("\n")
 
     chapters: List[Chapter] = []
     current_title: Optional[str] = None
